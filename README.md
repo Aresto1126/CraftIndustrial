@@ -8,12 +8,15 @@
 - **計算**: 完成物と必要数を指定すると、中間素材・原料の必要量、レシピ回数、各素材の作成/自動化状況を表示。
 - **設定**: JSONバックアップの書き出し/読み込み、サンプルデータ追加。
 
-### 起動・スマホで使う
-```
-python3 -m http.server 8000   # 静的ファイルを配信できれば何でも可
-```
-HTTPSで公開（GitHub Pages等）してスマホで開き、「ホーム画面に追加」するとオフラインでも動作します。
-`file://` で直接開いても動作します（オフラインキャッシュのみ無効）。
+### ホーム画面に追加して使う（GitHub Pages）
+1. このブランチを `main` にマージ（pushで `.github/workflows/pages.yml` が自動公開）
+2. GitHubの Settings → Pages → Source を **GitHub Actions** にする（初回のみ）
+3. 公開URL（`https://<ユーザー名>.github.io/CraftIndustrial/`）をスマホで開く
+   - iPhone: Safari → 共有 → 「ホーム画面に追加」
+   - Android: Chrome → ⋮ → 「アプリをインストール」/「ホーム画面に追加」
+4. 以後はアイコンをタップするだけで全画面で起動し、一度開けば機内モードでも動作します。
+
+ローカル確認: `python3 -m http.server 8000`
 
 ### テスト
 `node calc.test.js`
