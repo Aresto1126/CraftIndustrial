@@ -10,10 +10,18 @@
   let ui = { tab: 'items', game: '', status: '', q: '', calc: { id: '', qty: 1, roundUp: true, onlyTodo: false }, editing: null };
 
   function load() {
-    try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && Array.isArray(s.items)) return s; } catch (e) {}
-    return { items: [] };
+    try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && Array.isArray(s.items)) return { items: s.items, tombstones: s.tombstones || {} }; } catch (e) {}
+    return { items: [], tombstones: {} };
   }
-  function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { alert('保存に失敗しました（容量不足またはプライベートモード）'); } }
+  function persist() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { alert('保存に失敗しました（容量不足またはプライベートモード）'); } }
+  function save() { persist(); scheduleSync(); }
+  const touch = (it) => { it.updatedAt = Date.now(); return it; };
+  const removeItems = (ids) => {
+    const now = Date.now();
+    ids.forEach((id) => (state.tombstones[id] = now));
+    state.items = state.items.filter((i) => !ids.includes(i.id));
+    state.items.forEach((i) => { if (i.inputs.some((x) => ids.includes(x.id))) { i.inputs = i.inputs.filter((x) => !ids.includes(x.id)); touch(i); } });
+  };
   const byId = (id) => state.items.find((i) => i.id === id);
   const isRaw = (i) => !(i.inputs && i.inputs.length);
   const games = () => [...new Set(state.items.map((i) => i.game).filter(Boolean))];
@@ -52,7 +60,7 @@
       const g = e.target.closest('[data-game]'), s = e.target.closest('[data-status]'), b = e.target.closest('[data-cycle]'), c = e.target.closest('[data-edit]');
       if (g) { ui.game = g.dataset.game; renderItems(); }
       else if (s) { ui.status = s.dataset.status; renderItems(); }
-      else if (b) { const it = byId(b.dataset.cycle); it.status = { none: 'manual', manual: 'auto', auto: 'none' }[it.status]; save(); renderItems(); }
+      else if (b) { const it = byId(b.dataset.cycle); it.status = { none: 'manual', manual: 'auto', auto: 'none' }[it.status]; touch(it); save(); renderItems(); }
       else if (c) openEditor(c.dataset.edit);
     };
   }
@@ -100,6 +108,7 @@
 
   function renderSettings() {
     $('#main').innerHTML = `
+      ${syncCard()}
       <div class="card"><b>データ</b><div class="sub" style="margin:4px 0 10px">${state.items.length}件。データはこの端末のブラウザ内にのみ保存されます。機種変更前にバックアップしてください。</div>
         <div class="row"><button id="exp">バックアップを書き出す</button><button id="imp">読み込む</button></div>
         <input type="file" id="file" accept="application/json" hidden></div>
@@ -117,16 +126,20 @@
         const d = JSON.parse(await e.target.files[0].text());
         if (!Array.isArray(d.items)) throw 0;
         if (!confirm(`現在のデータを置き換えて ${d.items.length} 件を読み込みますか？`)) return;
-        state = { items: d.items }; save(); alert('読み込みました'); render();
+        const now = Date.now(), keep = new Set(d.items.map((i) => i.id));
+        removeItems(state.items.map((i) => i.id).filter((id) => !keep.has(id)));
+        d.items.forEach((i) => { touch(i); delete state.tombstones[i.id]; });
+        state.items = d.items; save(); alert('読み込みました'); render();
       } catch (err) { alert('読み込めないファイルです'); }
     };
     $('#sample').onclick = () => { addSample(); save(); alert('追加しました'); ui.tab = 'items'; render(); };
-    $('#wipe').onclick = () => { if (confirm('本当に全データを削除しますか？')) { state = { items: [] }; save(); render(); } };
+    $('#wipe').onclick = () => { if (confirm('本当に全データを削除しますか？' + (cloud.token ? '（連携中の他の端末からも消えます）' : ''))) { removeItems(state.items.map((i) => i.id)); save(); render(); } };
+    bindSync();
   }
   function addSample() {
     const S = 'サティスファクトリー', M = 'マインクラフト', mk = {};
     const add = (key, game, name, status, outQty, inputs) => {
-      mk[key] = { id: uid(), game, name, status, outQty, inputs: (inputs || []).map(([k, qty]) => ({ id: mk[k].id, qty })), note: '' };
+      mk[key] = touch({ id: uid(), game, name, status, outQty, inputs: (inputs || []).map(([k, qty]) => ({ id: mk[k].id, qty })), note: '' });
       state.items.push(mk[key]);
     };
     add('fe', S, '鉄鉱石', 'auto', 1);
@@ -166,8 +179,7 @@
   $('#delBtn').onclick = () => {
     const id = ui.editing, users = state.items.filter((i) => i.inputs.some((x) => x.id === id));
     if (!confirm(users.length ? `「${users.map((u) => u.name).join('、')}」のレシピでも使われています。削除しますか？` : '削除しますか？')) return;
-    state.items = state.items.filter((i) => i.id !== id);
-    state.items.forEach((i) => (i.inputs = i.inputs.filter((x) => x.id !== id)));
+    removeItems([id]);
     save(); dlg.close(); render();
   };
   form.onsubmit = (e) => {
@@ -176,15 +188,94 @@
       .filter((x) => x.id && x.qty > 0);
     const data = { name: form.name.value.trim(), game: form.game.value.trim(), status: form.status.value, outQty: parseFloat(form.outQty.value) || 1, inputs, note: form.note.value.trim() };
     if (!data.name) return;
-    if (ui.editing) Object.assign(byId(ui.editing), data); else state.items.push({ id: uid(), ...data });
+    if (ui.editing) touch(Object.assign(byId(ui.editing), data)); else state.items.push(touch({ id: uid(), ...data }));
     const probe = Calc.calculate(state.items, ui.editing || state.items[state.items.length - 1].id, 1);
     if (probe.error === 'cycle') alert('注意: このレシピは循環しています（計算できません）。材料を見直してください。');
     save(); dlg.close(); render();
   };
 
+  // ---------- 端末間同期（GitHub シークレットGist） ----------
+  const CK = 'craft-sync-v1', FILE = 'craft-manager-data.json', API = 'https://api.github.com';
+  let cloud = (() => { try { return JSON.parse(localStorage.getItem(CK)) || {}; } catch (e) { return {}; } })();
+  const saveCloud = () => { try { localStorage.setItem(CK, JSON.stringify(cloud)); } catch (e) {} };
+  let syncing = false, again = false, timer;
+
+  async function gh(path, opt) {
+    const r = await fetch(API + path, { ...opt, headers: { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + cloud.token, 'Content-Type': 'application/json' } });
+    if (!r.ok) { const e = new Error(r.status === 401 ? 'トークンが無効です' : `GitHubエラー (${r.status})`); e.status = r.status; throw e; }
+    return r.json();
+  }
+  async function findGist() {
+    for (let p = 1; p <= 5; p++) {
+      const l = await gh(`/gists?per_page=100&page=${p}`);
+      const g = l.find((g) => g.files && g.files[FILE]);
+      if (g) return g.id;
+      if (l.length < 100) break;
+    }
+    return null;
+  }
+  function scheduleSync() { if (cloud.token) { clearTimeout(timer); timer = setTimeout(syncNow, 1500); } }
+  async function syncNow() {
+    if (!cloud.token) return;
+    if (syncing) { again = true; return; }
+    syncing = true; cloud.err = ''; showSync('同期中…');
+    try {
+      if (!cloud.gistId) cloud.gistId = await findGist();
+      let remote = null;
+      if (cloud.gistId) {
+        const f = (await gh('/gists/' + cloud.gistId)).files[FILE];
+        if (f) {
+          if (f.truncated) throw new Error('データが大きすぎて同期できません');
+          const d = JSON.parse(f.content);
+          if (Array.isArray(d.items)) remote = { items: d.items, tombstones: d.tombstones || {} };
+        }
+      }
+      const merged = remote ? Sync.merge(state, remote) : state;
+      const localChanged = !Sync.same(merged, state);
+      if (!remote || !Sync.same(merged, remote)) {
+        const content = JSON.stringify({ items: merged.items, tombstones: merged.tombstones });
+        if (cloud.gistId) await gh('/gists/' + cloud.gistId, { method: 'PATCH', body: JSON.stringify({ files: { [FILE]: { content } } }) });
+        else cloud.gistId = (await gh('/gists', { method: 'POST', body: JSON.stringify({ description: 'クラフト管理アプリのデータ', public: false, files: { [FILE]: { content } } }) })).id;
+      }
+      state = merged; persist(); cloud.last = Date.now();
+      if (localChanged && !dlg.open) render();
+    } catch (e) {
+      cloud.err = e.status === 404 && cloud.gistId ? 'Gistが見つかりません。連携を解除してやり直してください' : e instanceof TypeError ? 'オフラインです（次回オンライン時に同期します）' : e.message;
+    } finally {
+      syncing = false; saveCloud(); showSync();
+      if (again) { again = false; syncNow(); }
+    }
+  }
+  function showSync(msg) {
+    const el = $('#syncStatus'); if (!el) return;
+    el.textContent = msg || (cloud.err ? '⚠ ' + cloud.err : cloud.last ? '✓ 最終同期 ' + new Date(cloud.last).toLocaleString('ja-JP') : '未同期');
+    el.className = 'sub' + (cloud.err && !msg ? ' none' : '');
+  }
+  function syncCard() {
+    const help = `<div class="sub" style="margin:4px 0 10px">PCとスマホで同じデータを使います。保存先はあなたのGitHubの非公開Gistです。
+      <a href="https://github.com/settings/tokens/new?scopes=gist&description=craft-manager" target="_blank" rel="noopener" style="color:var(--accent)">こちら</a>でトークンを作成（権限は <b>gist</b> のみ・有効期限は「No expiration」推奨）し、使う端末ごとに同じトークンを貼り付けてください。</div>`;
+    return `<div class="card"><b>端末間の同期</b>${help}${cloud.token
+      ? `<div id="syncStatus" class="sub"></div><div class="row" style="margin-top:8px"><button id="syncBtn">今すぐ同期</button><button id="unlink" class="danger">連携を解除</button></div>`
+      : `<label>GitHubトークン<input id="tok" type="password" autocomplete="off" placeholder="ghp_..."></label><button id="link" class="primary">連携して同期</button><div id="syncStatus" class="sub"></div>`}</div>`;
+  }
+  function bindSync() {
+    showSync();
+    if ($('#link')) $('#link').onclick = async () => {
+      const t = $('#tok').value.trim(); if (!t) return;
+      cloud = { token: t }; saveCloud(); await syncNow();
+      if (cloud.err) { const e = cloud.err; cloud = {}; saveCloud(); renderSettings(); $('#syncStatus').textContent = '⚠ ' + e; $('#syncStatus').className = 'sub none'; }
+      else renderSettings();
+    };
+    if ($('#syncBtn')) $('#syncBtn').onclick = syncNow;
+    if ($('#unlink')) $('#unlink').onclick = () => { if (confirm('この端末の連携を解除しますか？（データは端末に残り、Gistも削除されません）')) { cloud = {}; saveCloud(); renderSettings(); } };
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) syncNow(); });
+  window.addEventListener('online', syncNow);
+
   // ---------- 起動 ----------
   document.querySelectorAll('nav button').forEach((b) => (b.onclick = () => { ui.tab = b.dataset.tab; render(); window.scrollTo(0, 0); }));
   $('#addBtn').onclick = () => openEditor(null);
   render();
+  syncNow();
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();

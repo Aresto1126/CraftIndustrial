@@ -21,7 +21,7 @@ jobs:
       - uses: actions/configure-pages@v5
       - run: |
           mkdir _site
-          cp index.html style.css app.js calc.js sw.js manifest.webmanifest *.svg *.png _site/
+          cp index.html style.css app.js calc.js sync.js sw.js manifest.webmanifest *.svg *.png _site/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
